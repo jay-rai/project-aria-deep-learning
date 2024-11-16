@@ -1,6 +1,6 @@
 ## ReadMe
 ---
-The goal of the project was to either create or finetune a Vision model in order to do scene detection utilizing Meta's [Project Aria](https://www.projectaria.com/)Smart AR glasses along with the open  datasets from [project aria's open datasets](https://www.projectaria.com/datasets)
+The goal of the project was to either create or finetune a Vision model in order to do scene detection utilizing Meta's [Project Aria](https://www.projectaria.com/) Smart AR glasses along with the open  datasets from [project aria's open datasets](https://www.projectaria.com/datasets)
 
 The first thing you'll probably need to do is clone this repository which can be done with this command
 
@@ -29,7 +29,7 @@ There is a `requirements.txt` file included, after going into your virtual envir
 pip install -r requirements.txt
 ```
 
-After of which we still need some dependencies you most likely have, namely `ffmpeg`, to do this you'll have to type to the following
+After of which we still need some dependencies you most likely don't have, `ffmpeg`, to do this you'll have to type to the following
 
 - **Windows**
 ```
