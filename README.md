@@ -23,11 +23,7 @@ conda create -n "llava" python=3.10
 conda activate llava
 ```
 
-There is a `requirements.txt` file included, after going into your virtual environment just type the following and hopefully all the current requirements (and maybe some extra sorry) should be downloaded.  To install from this file 
-
-```
-pip install -r requirements.txt
-```
+Make sure you go through and have most of the dependecies
 
 After of which we still need some dependencies you most likely don't have, `ffmpeg`, to do this you'll have to type to the following
 
