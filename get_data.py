@@ -32,6 +32,7 @@ def download_file(url, dest_path, sha1sum=None):
             with requests.get(url, stream=True, timeout=60) as r:
                 r.raise_for_status()
                 total_size = int(r.headers.get('content-length', 0))
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                 with open(dest_path, 'wb') as f, tqdm(
                     desc=f"Downloading {os.path.basename(dest_path)}",
                     total=total_size,
@@ -40,8 +41,9 @@ def download_file(url, dest_path, sha1sum=None):
                     unit_divisor=1024,
                 ) as bar:
                     for chunk in r.iter_content(chunk_size=1024):
-                        size = f.write(chunk)
-                        bar.update(size)
+                        if chunk:
+                            size = f.write(chunk)
+                            bar.update(size)
             if sha1sum:
                 if verify_sha1(dest_path, sha1sum):
                     logging.info(f"Downloaded and verified: {dest_path}")
@@ -117,68 +119,125 @@ def extract_frames(video_path, frames_output_dir, num_frames=8):
         logging.error(f"Error extracting frames from {video_path}: {e}")
         return False
 
+def parse_activity_label(sequence_id: str) -> str:
+    """
+    Extracts the activity label from the sequence ID.
+    Example: "ADT_Apartment_release_clean_seq131_M1292" -> "Clean"
+    Handles cases where 'release' is followed by 'skeleton' or 'multiskeleton'.
+    """
+    try:
+        parts = sequence_id.split('_')
+        release_idx = parts.index('release')
+        activity_label = parts[release_idx + 1]
+        if activity_label.lower() in ["skeleton", "multiskeleton", "multiuser"]:
+            activity_label = parts[release_idx + 2]
+        return activity_label.capitalize()  # e.g., "clean" -> "Clean"
+    except (ValueError, IndexError):
+        logging.warning(f"Could not parse activity label from sequence ID: {sequence_id}")
+        return "Unknown"
+
+def generate_composite_label(sequence_id, annotations_dir):
+    """
+    Generate a composite label based on activity and key objects.
+    Example: "Clean with ChoppingBoard and Sponge"
+    """
+    try:
+        instances_path = os.path.join(annotations_dir, 'instances.json')
+        with open(instances_path, 'r') as f:
+            instances = json.load(f)
+        
+        # Extract dynamic objects
+        key_objects = [info['instance_name'] for info in instances.values() if info.get('motion_type') == 'dynamic']
+        activity_label = parse_activity_label(sequence_id)
+        if key_objects:
+            composite_label = f"{activity_label} with " + ", ".join(key_objects)
+        else:
+            composite_label = activity_label
+        return composite_label
+    except Exception as e:
+        logging.error(f"Error generating composite label for {sequence_id}: {e}")
+        return "Unknown"
+
 def process_sequence(sequence_id, sequence_data, dataset_dir):
     """
-    Process a single sequence: download video and ground truth, verify, extract frames.
+    Process a single sequence: download video and ground truth, verify, extract frames and annotations,
+    and organize them into activity-based directories.
     """
-    video_filename = sequence_data['video_main_rgb']['filename']
-    video_url = sequence_data['video_main_rgb']['download_url']
-    video_sha1 = sequence_data['video_main_rgb'].get('sha1sum')
-    
-    groundtruth_filename = sequence_data['main_groundtruth']['filename']
-    groundtruth_url = sequence_data['main_groundtruth']['download_url']
-    groundtruth_sha1 = sequence_data['main_groundtruth'].get('sha1sum')
-    
-    # Paths
-    video_dir = os.path.join(dataset_dir, 'video_main_rgb')
-    annotations_dir = os.path.join(dataset_dir, 'annotations', sequence_id)
-    frames_dir = os.path.join(dataset_dir, 'frames', sequence_id)
-    
+    activity_label = parse_activity_label(sequence_id).lower()  # e.g., "Clean" -> "clean"
+    activity_dir = os.path.join(dataset_dir, activity_label)
+    os.makedirs(activity_dir, exist_ok=True)
+
+    # Define sequence directory within the activity
+    sequence_dir = os.path.join(activity_dir, sequence_id)
+    video_dir = os.path.join(sequence_dir, 'video')
+    annotations_dir = os.path.join(sequence_dir, 'annotations')
+    frames_dir = os.path.join(sequence_dir, 'frames')
+    groundtruth_dir = os.path.join(sequence_dir, 'groundtruth')
+
+    # Create necessary directories
     Path(video_dir).mkdir(parents=True, exist_ok=True)
     Path(annotations_dir).mkdir(parents=True, exist_ok=True)
     Path(frames_dir).mkdir(parents=True, exist_ok=True)
-    
-    video_path = os.path.join(video_dir, video_filename)
-    groundtruth_path = os.path.join(dataset_dir, 'groundtruth_zips', sequence_id, groundtruth_filename)
-    
-    Path(os.path.dirname(groundtruth_path)).mkdir(parents=True, exist_ok=True)
-    
+    Path(groundtruth_dir).mkdir(parents=True, exist_ok=True)
+
     # Download video
-    if not os.path.exists(video_path):
-        success = download_file(video_url, video_path, sha1sum=video_sha1)
-        if not success:
-            logging.error(f"Failed to download video for sequence {sequence_id}")
-            return False
+    video_info = sequence_data.get('video_main_rgb', {})
+    video_filename = video_info.get('filename')
+    video_url = video_info.get('download_url')
+    video_sha1 = sequence_data['video_main_rgb'].get('sha1sum')
+
+    if video_filename and video_url:
+        video_path = os.path.join(video_dir, video_filename)
+        if not os.path.exists(video_path):
+            success = download_file(video_url, video_path, sha1sum=video_sha1)
+            if not success:
+                logging.error(f"Failed to download video for sequence {sequence_id}")
+                return False
+        else:
+            logging.info(f"Video already exists: {video_path}")
+        
+        # Extract frames
+        if not os.listdir(frames_dir):
+            success = extract_frames(video_path, frames_dir, num_frames=8)
+            if not success:
+                logging.error(f"Failed to extract frames for sequence {sequence_id}")
+                return False
+        else:
+            logging.info(f"Frames already extracted for sequence {sequence_id}")
     else:
-        logging.info(f"Video already exists: {video_path}")
-    
+        logging.warning(f"No video information for sequence {sequence_id}")
+
     # Download ground truth
-    if not os.path.exists(groundtruth_path):
-        success = download_file(groundtruth_url, groundtruth_path, sha1sum=groundtruth_sha1)
-        if not success:
-            logging.error(f"Failed to download ground truth for sequence {sequence_id}")
-            return False
+    groundtruth_info = sequence_data.get('main_groundtruth', {})
+    groundtruth_filename = groundtruth_info.get('filename')
+    groundtruth_url = groundtruth_info.get('download_url')
+    groundtruth_sha1 = groundtruth_info.get('sha1sum')
+
+    if groundtruth_filename and groundtruth_url:
+        groundtruth_path = os.path.join(groundtruth_dir, groundtruth_filename)
+        if not os.path.exists(groundtruth_path):
+            success = download_file(groundtruth_url, groundtruth_path, sha1sum=groundtruth_sha1)
+            if not success:
+                logging.error(f"Failed to download ground truth for sequence {sequence_id}")
+                return False
+        else:
+            logging.info(f"Ground truth already exists: {groundtruth_path}")
+        
+        # Extract ground truth
+        if not os.listdir(annotations_dir):
+            success = extract_zip(groundtruth_path, annotations_dir)
+            if not success:
+                logging.error(f"Failed to extract ground truth for sequence {sequence_id}")
+                return False
+        else:
+            logging.info(f"Ground truth already extracted for sequence {sequence_id}")
     else:
-        logging.info(f"Ground truth already exists: {groundtruth_path}")
-    
-    # Extract ground truth
-    if not os.listdir(annotations_dir):
-        success = extract_zip(groundtruth_path, annotations_dir)
-        if not success:
-            logging.error(f"Failed to extract ground truth for sequence {sequence_id}")
-            return False
-    else:
-        logging.info(f"Ground truth already extracted for sequence {sequence_id}")
-    
-    # Extract frames
-    if not os.listdir(frames_dir):
-        success = extract_frames(video_path, frames_dir, num_frames=8)
-        if not success:
-            logging.error(f"Failed to extract frames for sequence {sequence_id}")
-            return False
-    else:
-        logging.info(f"Frames already extracted for sequence {sequence_id}")
-    
+        logging.warning(f"No ground truth information for sequence {sequence_id}")
+
+    # Generate composite label based on annotations
+    composite_label = generate_composite_label(sequence_id, annotations_dir)
+    logging.info(f"Composite label for sequence {sequence_id}: {composite_label}")
+
     return True
 
 def main(json_path, dataset_dir, max_download=10):
@@ -192,9 +251,6 @@ def main(json_path, dataset_dir, max_download=10):
     except Exception as e:
         logging.error(f"Error loading JSON file {json_path}: {e}")
         sys.exit(1)
-    
-    groundtruth_download_dir = os.path.join(dataset_dir, 'groundtruth_zips')
-    Path(groundtruth_download_dir).mkdir(parents=True, exist_ok=True)
     
     downloaded = 0
     for sequence_id, sequence_data in tqdm(sequences.items(), desc="Processing sequences"):
@@ -214,10 +270,10 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Download and organize ARIA dataset for Video-LLaVa fine-tuning.")
-    parser.add_argument('--json_path', type=str, required=True, help="Path to ADT_downloads_url.json")
+    parser.add_argument('--json_path', type=str, required=True, help="Path to ADT_download_urls.json")
     parser.add_argument('--dataset_dir', type=str, default='aria_dataset', help="Directory to store the dataset")
     parser.add_argument('--max_download', type=int, default=10, help="Maximum number of sequences to download")
-    
+
     args = parser.parse_args()
-    
+
     main(args.json_path, args.dataset_dir, args.max_download)
